@@ -272,7 +272,7 @@ def main():
             remaining = max(0, cfg.time_limit_seconds - elapsed_total)
 
             val_msg = ""
-            if step % 100 == 0:
+            if step % 200 == 0:
                 model.eval()
                 with torch.no_grad():
                     vl = 0.0
@@ -296,6 +296,24 @@ def main():
             log_lr.append(get_lr(step, cfg))
             if val_msg:
                 log_val_loss.append((step, vl))
+
+            # Save plot periodically
+            if step % 100 == 0 and log_steps:
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+                ax1.plot(log_steps, log_train_loss, label="train", alpha=0.7)
+                if log_val_loss:
+                    vs, vl = zip(*log_val_loss)
+                    ax1.plot(vs, vl, label="val", linewidth=2)
+                ax1.set_ylabel("Loss")
+                ax1.legend()
+                ax1.grid(True)
+                ax2.plot(log_steps, log_lr)
+                ax2.set_ylabel("Learning Rate")
+                ax2.set_xlabel("Step")
+                ax2.grid(True)
+                fig.tight_layout()
+                fig.savefig("training_curves.png", dpi=150)
+                plt.close(fig)
 
         # GPU memory log (once)
         if master and step == 1:

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=llm-train
 #SBATCH --partition=gpus
-#SBATCH --nodes=1
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
 #SBATCH --exclusive
@@ -41,15 +41,15 @@ srun python -m torch.distributed.run \
         --data_dir      /home/data/ \
         --checkpoint_path checkpoint.pt \
         --seq_len       1024 \
-        --n_layer       24 \
+        --n_layer       16 \
         --n_head        16 \
-        --n_embd        2048 \
-        --batch_size    64 \
+        --n_embd        1024 \
+        --batch_size    8 \
         --grad_accum_steps 2 \
-        --max_lr        8e-4 \
-        --min_lr        8e-5 \
-        --warmup_steps  50 \
-        --max_steps        1000 \
+        --max_lr        5e-4 \
+        --min_lr        5e-5 \
+        --warmup_steps  200 \
+        --max_steps        7000 \
         --time_limit_min   10
 
 kill $GPU_MON_PID 2>/dev/null
