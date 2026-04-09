@@ -168,6 +168,9 @@ def main():
     if ddp:
         model = DDP(model, device_ids=[local_rank])
 
+        # compile 
+        model = torch.compile(model, mode="max-autotune")
+
     # ------------------------------------------------------------------ Optimizer
     raw_model      = model.module if ddp else model
     decay_params   = [p for n, p in raw_model.named_parameters()

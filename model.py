@@ -17,6 +17,35 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import helion
+import helion.language as hl
+
+
+
+# q, k, v: [B, H, T, D]
+# returns: [B, H, T, D]
+
+@helion.kernel
+def causal_attention_kernel(q, k, v, scale):
+    B, H, T, D = q.shape
+    out = hl.zeros((B, H, T, D), dtype=q.dtype)
+
+    for b, h in hl.grid([B, H]):
+        scores = hl.zeros((T, T), dtype=q.dtype)
+
+        # QK^T
+        for i, j in hl.tile([T, T]):
+            qi = hl.load(q, (b, h, i, slice(None)))
+            kj = hl.load(k, (b, h, j, slice(None)))
+            scores_ij = hl.sum(qi * kj) * scale
+            scores[i, j] = hl.where(j <= i, scores_ij, -1e9)
+
+        scores = torch.softmax(scores, dim=-1)
+        for i, j in hl.tile([T, T]):
+            vi = hl.load(v, (b, h, j, slice(None)))
+            out[b, h, i] += scores[i, j] * vi
+
+    return out
 
 
 class CausalSelfAttention(nn.Module):
