@@ -65,8 +65,12 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, hd).transpose(1, 2)
         k = k.view(B, T, self.n_head, hd).transpose(1, 2)
         v = v.view(B, T, self.n_head, hd).transpose(1, 2)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True,
-                                           dropout_p=self.dropout if self.training else 0.0)
+        
+        
+        scale = (q.size(-1) ** -0.5)
+        y = causal_attention_kernel(q, k, v, scale)
+
+
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.c_proj(y)
 

@@ -169,7 +169,7 @@ def main():
         model = DDP(model, device_ids=[local_rank])
 
         # compile 
-        model = torch.compile(model, mode="max-autotune")
+        model = torch.compile(model, mode="default")
 
     # ------------------------------------------------------------------ Optimizer
     raw_model      = model.module if ddp else model
