@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=llm-train
 #SBATCH --partition=gpus
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
 #SBATCH --exclusive
@@ -12,6 +12,8 @@ set -euo pipefail
 
 mkdir -p logs
 
+echo "[$(date)] Job $SLURM_JOB_ID starting on $(hostname)" >&2
+
 # ── Rendezvous info derived from SLURM ──────────────────────────────────────
 MASTER_ADDR=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n1)
 MASTER_PORT=29500
@@ -20,7 +22,12 @@ NPROC_PER_NODE=$SLURM_GPUS_PER_NODE   # GPUs per node
 
 echo "Master: $MASTER_ADDR:$MASTER_PORT  |  Nodes: $NNODES  |  GPUs/node: $NPROC_PER_NODE"
 
-source .venv/bin/activate
+echo "[$(date)] Activating venv..." >&2
+if ! source ../Hackhaton-PyTorch/.venv/bin/activate; then
+    echo "[ERROR] Failed to activate venv at ../Hackhaton-PyTorch/.venv/bin/activate" >&2
+    exit 1
+fi
+echo "[$(date)] Venv activated" >&2
 
 # ── Launch one torchrun per node via srun ────────────────────────────────────
 srun python -m torch.distributed.run \
@@ -36,5 +43,7 @@ srun python -m torch.distributed.run \
         --batch_size    8 \
         --grad_accum_steps 4 \
         --max_steps        5000 \
-        --time_limit_min   10
+        --time_limit_min   10 \
+        --eval_every_steps 100 \
+        --eval_max_batches 200
 

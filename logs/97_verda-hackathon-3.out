@@ -1,0 +1,6 @@
+Running eval with checkpoint: ../Hackhaton-PyTorch/checkpoint.pt
+[eval] args: {'checkpoint_path': '../Hackhaton-PyTorch/checkpoint.pt', 'data_dir': '/home/data/', 'token_dtype': 'uint16', 'seq_len': None, 'batch_size': 8, 'device': None, 'max_batches': None, 'stride': None, 'val_fraction': 0.01}
+[eval] checkpoint: ../Hackhaton-PyTorch/checkpoint.pt
+[eval] device: cuda
+[eval] val shards: 1
+[eval] seq_len=1024 batch_size=8 stride=1024
