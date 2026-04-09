@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=llm-train
 #SBATCH --partition=gpus
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=8
 #SBATCH --exclusive
@@ -20,7 +20,7 @@ NPROC_PER_NODE=$SLURM_GPUS_PER_NODE   # GPUs per node
 
 echo "Master: $MASTER_ADDR:$MASTER_PORT  |  Nodes: $NNODES  |  GPUs/node: $NPROC_PER_NODE"
 
-source .venv/bin/activate
+source ../Hackhaton-PyTorch/.venv/bin/activate
 
 # ── Launch one torchrun per node via srun ────────────────────────────────────
 srun python -m torch.distributed.run \

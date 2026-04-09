@@ -25,8 +25,8 @@ class CausalSelfAttention(nn.Module):
         assert n_embd % n_head == 0
         self.n_head = n_head
         self.n_embd = n_embd
-        self.c_attn  = nn.Linear(n_embd, 3 * n_embd, bias=False)
-        self.c_proj  = nn.Linear(n_embd, n_embd,     bias=False)
+        self.c_attn = nn.Linear(n_embd, 3 * n_embd, bias=False)
+        self.c_proj = nn.Linear(n_embd, n_embd,     bias=False)
         self.dropout = dropout
 
     def forward(self, x):
@@ -45,7 +45,7 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, n_embd, dropout):
         super().__init__()
-        self.fc   = nn.Linear(n_embd, 4 * n_embd, bias=False)
+        self.fc = nn.Linear(n_embd, 4 * n_embd, bias=False)
         self.proj = nn.Linear(4 * n_embd, n_embd, bias=False)
         self.drop = nn.Dropout(dropout)
 
@@ -56,10 +56,10 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, n_embd, n_head, seq_len, dropout):
         super().__init__()
-        self.ln1  = nn.LayerNorm(n_embd)
+        self.ln1 = nn.RMSNorm(n_embd)
         self.attn = CausalSelfAttention(n_embd, n_head, seq_len, dropout)
-        self.ln2  = nn.LayerNorm(n_embd)
-        self.mlp  = MLP(n_embd, dropout)
+        self.ln2 = nn.RMSNorm(n_embd)
+        self.mlp = MLP(n_embd, dropout)
 
     def forward(self, x):
         x = x + self.attn(self.ln1(x))
@@ -72,12 +72,12 @@ class GPT(nn.Module):
         super().__init__()
         self.seq_len = seq_len
         self.transformer = nn.ModuleDict(dict(
-            wte  = nn.Embedding(vocab_size, n_embd),
-            wpe  = nn.Embedding(seq_len,    n_embd),
-            drop = nn.Dropout(dropout),
-            h    = nn.ModuleList([Block(n_embd, n_head, seq_len, dropout)
-                                  for _ in range(n_layer)]),
-            ln_f = nn.LayerNorm(n_embd),
+            wte=nn.Embedding(vocab_size, n_embd),
+            wpe=nn.Embedding(seq_len,    n_embd),
+            drop=nn.Dropout(dropout),
+            h=nn.ModuleList([Block(n_embd, n_head, seq_len, dropout)
+                             for _ in range(n_layer)]),
+            ln_f=nn.RMSNorm(n_embd),
         ))
         self.lm_head = nn.Linear(n_embd, vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight  # weight tying
@@ -96,14 +96,16 @@ class GPT(nn.Module):
     def forward(self, idx, targets=None):
         B, T = idx.shape
         pos = torch.arange(T, device=idx.device)
-        x = self.transformer.drop(self.transformer.wte(idx) + self.transformer.wpe(pos))
+        x = self.transformer.drop(self.transformer.wte(
+            idx) + self.transformer.wpe(pos))
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
 
     def num_params(self):
@@ -120,11 +122,10 @@ def get_model(config: dict) -> nn.Module:
     Called by both train.py (before training) and eval.py (to load a checkpoint).
     """
     return GPT(
-        vocab_size = config.get("vocab_size", 32768),
-        seq_len    = config.get("seq_len",    1024),
-        n_layer    = config.get("n_layer",    12),
-        n_head     = config.get("n_head",     12),
-        n_embd     = config.get("n_embd",     768),
-        dropout    = config.get("dropout",    0.0),
+        vocab_size=config.get("vocab_size", 32768),
+        seq_len=config.get("seq_len",    1024),
+        n_layer=config.get("n_layer",    12),
+        n_head=config.get("n_head",     12),
+        n_embd=config.get("n_embd",     768),
+        dropout=config.get("dropout",    0.0),
     )
-
