@@ -6,6 +6,7 @@ import os
 import time
 import glob
 import math
+import re
 import argparse
 from contextlib import nullcontext
 from dataclasses import dataclass, asdict
@@ -60,15 +61,30 @@ class BinDataset:
     """Memory-maps all *.bin files and draws random (seq_len+1)-token windows."""
 
     def __init__(self, data_dir: str, seq_len: int, dtype: str = "uint16"):
-        paths = sorted(glob.glob(os.path.join(data_dir, "*.bin")))
-        if not paths:
+        all_paths = sorted(glob.glob(os.path.join(data_dir, "*.bin")))
+        if not all_paths:
             raise FileNotFoundError(f"No *.bin files found in '{data_dir}'")
+
+        paths = []
+        for p in all_paths:
+            m = re.match(r"^chunk_(\d+)\.bin$", os.path.basename(p))
+            if m is None:
+                continue
+            chunk_id = int(m.group(1))
+            if 1 <= chunk_id <= 44:
+                paths.append(p)
+
+        if not paths:
+            raise FileNotFoundError(
+                "No training chunks found in range chunk_0001.bin..chunk_0044.bin"
+            )
         self.seq_len  = seq_len
         np_dtype      = np.dtype(dtype)
         self.shards   = [np.memmap(p, dtype=np_dtype, mode="r") for p in paths]
         self.lengths  = [len(s) for s in self.shards]
         self.total    = sum(self.lengths)
         self.weights  = [l / self.total for l in self.lengths]
+        print(f"[data] train split: chunks 0001-0044 (inclusive)")
         print(f"[data] {len(paths)} shard(s), {self.total:,} tokens total")
 
     def get_batch(self, batch_size: int, device):
