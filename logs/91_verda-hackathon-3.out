@@ -1,0 +1,5 @@
+Running eval with checkpoint: ../Hackhaton-PyTorch/checkpoint.pt
+[eval] checkpoint: ../Hackhaton-PyTorch/checkpoint.pt
+[eval] device: cuda
+[eval] val shards: 2
+[eval] seq_len=1024 batch_size=8 stride=1024

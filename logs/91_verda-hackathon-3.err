@@ -1,0 +1,3 @@
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+[2026-04-09T12:28:15.452] error: *** JOB 91 ON verda-hackathon-3 CANCELLED AT 2026-04-09T12:28:15 DUE to SIGNAL Terminated ***
+[2026-04-09T12:28:15.452] error: *** STEP 91.0 ON verda-hackathon-3 CANCELLED AT 2026-04-09T12:28:15 DUE to SIGNAL Terminated ***
