@@ -22,6 +22,14 @@ echo "Master: $MASTER_ADDR:$MASTER_PORT  |  Nodes: $NNODES  |  GPUs/node: $NPROC
 
 source ../Hackhaton-PyTorch/.venv/bin/activate
 
+# GPU monitoring en background
+while true; do
+    echo "=== $(date) ==="
+    nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader
+    sleep 30
+done > logs/gpu_monitor.log 2>&1 &
+GPU_MON_PID=$!
+
 # ── Launch one torchrun per node via srun ────────────────────────────────────
 srun python -m torch.distributed.run \
     --nnodes="$NNODES" \
@@ -33,8 +41,15 @@ srun python -m torch.distributed.run \
         --data_dir      /home/data/ \
         --checkpoint_path checkpoint.pt \
         --seq_len       1024 \
-        --batch_size    8 \
-        --grad_accum_steps 4 \
-        --max_steps        5000 \
+        --n_layer       24 \
+        --n_head        16 \
+        --n_embd        2048 \
+        --batch_size    64 \
+        --grad_accum_steps 2 \
+        --max_lr        8e-4 \
+        --min_lr        8e-5 \
+        --warmup_steps  50 \
+        --max_steps        1000 \
         --time_limit_min   10
 
+kill $GPU_MON_PID 2>/dev/null

@@ -124,8 +124,8 @@ def get_model(config: dict) -> nn.Module:
     return GPT(
         vocab_size=config.get("vocab_size", 32768),
         seq_len=config.get("seq_len",    1024),
-        n_layer=config.get("n_layer",    12),
-        n_head=config.get("n_head",     12),
-        n_embd=config.get("n_embd",     768),
+        n_layer=config.get("n_layer",    24),
+        n_head=config.get("n_head",     16),
+        n_embd=config.get("n_embd",     2048),
         dropout=config.get("dropout",    0.0),
     )

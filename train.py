@@ -1,49 +1,49 @@
 """
 Starter training script for the gpu-mode Paris hackathon training track
 """
-
-import os
-import time
-import glob
-import math
-import argparse
-from contextlib import nullcontext
-from dataclasses import dataclass, asdict
-
-import numpy as np
-import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
-import torch.distributed as dist
-
 from model import get_model
+import torch.distributed as dist
+from torch.distributed import init_process_group, destroy_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch
+import numpy as np
+from dataclasses import dataclass, asdict
+from contextlib import nullcontext
+import argparse
+import re
+import math
+import glob
+import time
+import os
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 # ---------------------------------------------------------------------------
 # Training configuration
 # ---------------------------------------------------------------------------
-
 @dataclass
 class Config:
     # Data
-    data_dir:    str   = "data"
-    token_dtype: str   = "uint16"
-    seq_len:     int   = 1024
+    data_dir:    str = "data"
+    token_dtype: str = "uint16"
+    seq_len:     int = 1024
 
-    # Model (passed through to get_model — add arch-specific keys in model.py)
-    vocab_size: int   = 32768
-    n_layer:    int   = 12
-    n_head:     int   = 12
-    n_embd:     int   = 768
+    # Model
+    vocab_size: int = 32768
+    n_layer:    int = 12
+    n_head:     int = 12
+    n_embd:     int = 768
     dropout:    float = 0.0
 
     # Training
-    batch_size:       int   = 8
-    grad_accum_steps: int   = 4
+    batch_size:       int = 8
+    grad_accum_steps: int = 4
     max_lr:           float = 6e-4
     min_lr:           float = 6e-5
-    warmup_steps:     int   = 100
-    max_steps:        int   = 10_000
+    warmup_steps:     int = 100
+    max_steps:        int = 10_000
     weight_decay:     float = 0.1
     grad_clip:        float = 1.0
     time_limit_seconds: float = 10 * 60
@@ -55,38 +55,69 @@ class Config:
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
+def _load_shards(data_dir, dtype, chunk_ids):
+    all_paths = sorted(glob.glob(os.path.join(data_dir, "*.bin")))
+    paths = []
+    for p in all_paths:
+        m = re.match(r"^chunk_(\d+)\.bin$", os.path.basename(p))
+        if m and int(m.group(1)) in chunk_ids:
+            paths.append(p)
+    np_dtype = np.dtype(dtype)
+    shards = [np.memmap(p, dtype=np_dtype, mode="r") for p in paths]
+    lengths = [len(s) for s in shards]
+    total = sum(lengths)
+    weights = [l / total for l in lengths]
+    return shards, weights, total, len(paths)
+
 
 class BinDataset:
-    """Memory-maps all *.bin files and draws random (seq_len+1)-token windows."""
+    def __init__(self, data_dir, seq_len, dtype="uint16", chunk_ids=None):
+        if chunk_ids is None:
+            chunk_ids = set(range(1, 45))
+        self.seq_len = seq_len
+        self.shards, self.weights, self.total, n = _load_shards(
+            data_dir, dtype, chunk_ids)
+        print(f"[data] train: {n} shard(s), {self.total:,} tokens")
 
-    def __init__(self, data_dir: str, seq_len: int, dtype: str = "uint16"):
-        paths = sorted(glob.glob(os.path.join(data_dir, "*.bin")))
-        if not paths:
-            raise FileNotFoundError(f"No *.bin files found in '{data_dir}'")
-        self.seq_len  = seq_len
-        np_dtype      = np.dtype(dtype)
-        self.shards   = [np.memmap(p, dtype=np_dtype, mode="r") for p in paths]
-        self.lengths  = [len(s) for s in self.shards]
-        self.total    = sum(self.lengths)
-        self.weights  = [l / self.total for l in self.lengths]
-        print(f"[data] {len(paths)} shard(s), {self.total:,} tokens total")
-
-    def get_batch(self, batch_size: int, device):
+    def get_batch(self, batch_size, device):
         xs, ys = [], []
         for _ in range(batch_size):
-            shard = self.shards[np.random.choice(len(self.shards), p=self.weights)]
+            shard = self.shards[np.random.choice(
+                len(self.shards), p=self.weights)]
             start = np.random.randint(0, len(shard) - self.seq_len - 1)
-            chunk = torch.from_numpy(shard[start:start + self.seq_len + 1].astype(np.int64))
+            chunk = torch.from_numpy(
+                shard[start:start + self.seq_len + 1].astype(np.int64))
+            xs.append(chunk[:-1])
+            ys.append(chunk[1:])
+        return torch.stack(xs).to(device), torch.stack(ys).to(device)
+
+
+class ValDataset:
+    def __init__(self, data_dir, seq_len, dtype="uint16", chunk_ids=None):
+        if chunk_ids is None:
+            chunk_ids = set(range(45, 50))
+        self.seq_len = seq_len
+        self.shards, self.weights, self.total, n = _load_shards(
+            data_dir, dtype, chunk_ids)
+        print(f"[data] val:   {n} shard(s), {self.total:,} tokens")
+
+    def get_batch(self, batch_size, device):
+        xs, ys = [], []
+        for _ in range(batch_size):
+            shard = self.shards[np.random.choice(
+                len(self.shards), p=self.weights)]
+            start = np.random.randint(0, len(shard) - self.seq_len - 1)
+            chunk = torch.from_numpy(
+                shard[start:start + self.seq_len + 1].astype(np.int64))
             xs.append(chunk[:-1])
             ys.append(chunk[1:])
         return torch.stack(xs).to(device), torch.stack(ys).to(device)
 
 
 # ---------------------------------------------------------------------------
-# LR schedule: linear warmup → cosine decay → min_lr
+# LR schedule
 # ---------------------------------------------------------------------------
-
-def get_lr(step: int, cfg: Config) -> float:
+def get_lr(step, cfg):
     if step < cfg.warmup_steps:
         return cfg.max_lr * step / cfg.warmup_steps
     if step >= cfg.max_steps:
@@ -98,21 +129,19 @@ def get_lr(step: int, cfg: Config) -> float:
 # ---------------------------------------------------------------------------
 # Checkpoint
 # ---------------------------------------------------------------------------
-
-def save_checkpoint(model, step: int, cfg: Config):
+def save_checkpoint(model, step, cfg):
     raw_model = model.module if hasattr(model, "module") else model
     torch.save({
         "step":   step,
         "model":  raw_model.state_dict(),
         "config": asdict(cfg),
     }, cfg.checkpoint_path)
-    print(f"[ckpt] saved → {cfg.checkpoint_path}  (step {step})")
+    print(f"[ckpt] saved -> {cfg.checkpoint_path}  (step {step})")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir",          default="data")
@@ -126,41 +155,49 @@ def main():
     parser.add_argument("--grad_accum_steps",  type=int,   default=4)
     parser.add_argument("--max_steps",         type=int,   default=10_000)
     parser.add_argument("--time_limit_min",    type=float, default=10.0)
+    parser.add_argument("--max_lr",            type=float, default=6e-4)
+    parser.add_argument("--min_lr",            type=float, default=6e-5)
+    parser.add_argument("--warmup_steps",      type=int,   default=100)
     args = parser.parse_args()
 
     cfg = Config(
-        data_dir           = args.data_dir,
-        checkpoint_path    = args.checkpoint_path,
-        seq_len            = args.seq_len,
-        vocab_size         = args.vocab_size,
-        n_layer            = args.n_layer,
-        n_head             = args.n_head,
-        n_embd             = args.n_embd,
-        batch_size         = args.batch_size,
-        grad_accum_steps   = args.grad_accum_steps,
-        max_steps          = args.max_steps,
-        time_limit_seconds = args.time_limit_min * 60,
+        data_dir=args.data_dir,
+        checkpoint_path=args.checkpoint_path,
+        seq_len=args.seq_len,
+        vocab_size=args.vocab_size,
+        n_layer=args.n_layer,
+        n_head=args.n_head,
+        n_embd=args.n_embd,
+        batch_size=args.batch_size,
+        grad_accum_steps=args.grad_accum_steps,
+        max_steps=args.max_steps,
+        max_lr=args.max_lr,
+        min_lr=args.min_lr,
+        warmup_steps=args.warmup_steps,
+        time_limit_seconds=args.time_limit_min * 60,
     )
 
     # ------------------------------------------------------------------ DDP
     ddp = int(os.environ.get("RANK", -1)) != -1
     if ddp:
         init_process_group(backend="nccl")
-        rank       = dist.get_rank()
+        rank = dist.get_rank()
         local_rank = int(os.environ["LOCAL_RANK"])
-        device     = f"cuda:{local_rank}"
+        device = f"cuda:{local_rank}"
         torch.cuda.set_device(device)
-        master     = rank == 0
+        master = rank == 0
     else:
-        rank = 0; master = True
+        rank = 0
+        master = True
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     torch.manual_seed(1337 + rank)
     amp_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16) \
-              if "cuda" in device else nullcontext()
+        if "cuda" in device else nullcontext()
 
     # ------------------------------------------------------------------ Model
     model = get_model(asdict(cfg)).to(device)
+    model = torch.compile(model)
     if master:
         n_params = sum(p.numel() for p in model.parameters())
         print(f"[model] {n_params/1e6:.1f}M parameters")
@@ -169,9 +206,9 @@ def main():
         model = DDP(model, device_ids=[local_rank])
 
     # ------------------------------------------------------------------ Optimizer
-    raw_model      = model.module if ddp else model
-    decay_params   = [p for n, p in raw_model.named_parameters()
-                      if p.requires_grad and p.dim() >= 2]
+    raw_model = model.module if ddp else model
+    decay_params = [p for n, p in raw_model.named_parameters()
+                    if p.requires_grad and p.dim() >= 2]
     nodecay_params = [p for n, p in raw_model.named_parameters()
                       if p.requires_grad and p.dim() < 2]
     optimizer = torch.optim.AdamW(
@@ -182,23 +219,29 @@ def main():
 
     # ------------------------------------------------------------------ Data
     dataset = BinDataset(cfg.data_dir, cfg.seq_len, cfg.token_dtype)
+    val_dataset = ValDataset(cfg.data_dir, cfg.seq_len, cfg.token_dtype)
 
     # ------------------------------------------------------------------ Train
-    step        = 0
+    step = 0
     train_start = time.time()
     model.train()
     optimizer.zero_grad()
 
-    while step < cfg.max_steps:
+    log_steps = []
+    log_train_loss = []
+    log_val_loss = []
+    log_lr = []
 
-        # Time-limit check — never starts a new step after the deadline
+    while step < cfg.max_steps:
         elapsed = time.time() - train_start
-        stop = torch.tensor(int(elapsed >= cfg.time_limit_seconds), device=device)
+        stop = torch.tensor(
+            int(elapsed >= cfg.time_limit_seconds), device=device)
         if ddp:
             dist.broadcast(stop, src=0)
         if stop.item():
             if master:
-                print(f"\n[time] {elapsed/60:.1f} min elapsed — time limit reached.")
+                print(
+                    f"\n[time] {elapsed/60:.1f} min elapsed — time limit reached.")
                 save_checkpoint(model, step, cfg)
             break
 
@@ -206,15 +249,14 @@ def main():
         for pg in optimizer.param_groups:
             pg["lr"] = get_lr(step, cfg)
 
-        # Gradient accumulation
         accumulated_loss = 0.0
         for micro_step in range(cfg.grad_accum_steps):
-            x, y     = dataset.get_batch(cfg.batch_size, device)
+            x, y = dataset.get_batch(cfg.batch_size, device)
             sync_ctx = model.no_sync() if (ddp and micro_step < cfg.grad_accum_steps - 1) \
-                       else nullcontext()
+                else nullcontext()
             with sync_ctx, amp_ctx:
                 _, loss = model(x, y)
-                loss    = loss / cfg.grad_accum_steps
+                loss = loss / cfg.grad_accum_steps
             loss.backward()
             accumulated_loss += loss.item()
 
@@ -227,17 +269,62 @@ def main():
 
         if master and step % 10 == 0:
             elapsed_total = time.time() - train_start
-            remaining     = max(0, cfg.time_limit_seconds - elapsed_total)
-            print(f"step {step:6d} | loss {accumulated_loss:.4f} | "
+            remaining = max(0, cfg.time_limit_seconds - elapsed_total)
+
+            val_msg = ""
+            if step % 100 == 0:
+                model.eval()
+                with torch.no_grad():
+                    vl = 0.0
+                    for _ in range(10):
+                        xv, yv = val_dataset.get_batch(cfg.batch_size, device)
+                        with amp_ctx:
+                            _, vloss = model(xv, yv)
+                        vl += vloss.item()
+                    vl /= 10
+                val_msg = f" | val {vl:.4f}"
+                model.train()
+
+            print(f"step {step:6d} | loss {accumulated_loss:.4f}{val_msg} | "
                   f"lr {get_lr(step, cfg):.2e} | "
                   f"{(time.time()-step_start)*1000:.0f}ms/step | "
                   f"elapsed {elapsed_total/60:.1f}m | "
                   f"time left {remaining/60:.1f}m")
 
-    # max_steps reached cleanly
+            log_steps.append(step)
+            log_train_loss.append(accumulated_loss)
+            log_lr.append(get_lr(step, cfg))
+            if val_msg:
+                log_val_loss.append((step, vl))
+
+        # GPU memory log (once)
+        if master and step == 1:
+            print(f"[gpu] allocated: {torch.cuda.memory_allocated()/1e9:.1f} GB / "
+                  f"{torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
+
     if step >= cfg.max_steps and master:
         print(f"\n[done] Reached max_steps={cfg.max_steps}.")
         save_checkpoint(model, step, cfg)
+
+    if master and log_steps:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+        ax1.plot(log_steps, log_train_loss, label="train", alpha=0.7)
+        if log_val_loss:
+            vs, vl = zip(*log_val_loss)
+            ax1.plot(vs, vl, label="val", linewidth=2)
+        ax1.set_ylabel("Loss")
+        ax1.legend()
+        ax1.grid(True)
+
+        ax2.plot(log_steps, log_lr)
+        ax2.set_ylabel("Learning Rate")
+        ax2.set_xlabel("Step")
+        ax2.grid(True)
+
+        fig.tight_layout()
+        fig.savefig("training_curves.png", dpi=150)
+        print("[plot] saved training_curves.png")
 
     if ddp:
         destroy_process_group()
@@ -245,4 +332,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
