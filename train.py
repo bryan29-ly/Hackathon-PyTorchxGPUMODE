@@ -18,6 +18,7 @@ from torch.distributed import init_process_group, destroy_process_group
 import torch.distributed as dist
 
 from model import get_model
+from eval import select_val_paths, evaluate
 
 
 # ---------------------------------------------------------------------------
@@ -44,13 +45,17 @@ class Config:
     max_lr:           float = 6e-4
     min_lr:           float = 6e-5
     warmup_steps:     int   = 100
-    max_steps:        int   = 10_000
+    max_steps:        int   = 100
     weight_decay:     float = 0.1
     grad_clip:        float = 1.0
     time_limit_seconds: float = 10 * 60
 
     # Checkpointing
     checkpoint_path: str = "checkpoint.pt"
+
+    # Evaluation
+    eval_every_steps: int = 10
+    eval_max_batches: int = 200
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +147,10 @@ def main():
     parser.add_argument("--grad_accum_steps",  type=int,   default=4)
     parser.add_argument("--max_steps",         type=int,   default=10_000)
     parser.add_argument("--time_limit_min",    type=float, default=10.0)
+    parser.add_argument("--eval_every_steps",  type=int,   default=100,
+                        help="Run eval every N optimizer steps (0 disables).")
+    parser.add_argument("--eval_max_batches",  type=int,   default=200,
+                        help="Cap evaluation batches each time (<=0 means no cap).")
     args = parser.parse_args()
 
     cfg = Config(
@@ -156,6 +165,8 @@ def main():
         grad_accum_steps   = args.grad_accum_steps,
         max_steps          = args.max_steps,
         time_limit_seconds = args.time_limit_min * 60,
+        eval_every_steps   = args.eval_every_steps,
+        eval_max_batches   = args.eval_max_batches,
     )
 
     # ------------------------------------------------------------------ DDP
@@ -198,6 +209,11 @@ def main():
 
     # ------------------------------------------------------------------ Data
     dataset = BinDataset(cfg.data_dir, cfg.seq_len, cfg.token_dtype)
+    val_paths = None
+    if cfg.eval_every_steps > 0:
+        val_paths = select_val_paths(cfg.data_dir, val_fraction=0.05)
+        if master:
+            print(f"[eval] enabled every {cfg.eval_every_steps} step(s), shards={len(val_paths)}")
 
     # ------------------------------------------------------------------ Train
     step        = 0
@@ -240,6 +256,23 @@ def main():
         optimizer.zero_grad(set_to_none=True)
 
         step += 1
+
+        if cfg.eval_every_steps > 0 and step % cfg.eval_every_steps == 0:
+            val_loss, val_batches, val_tokens = evaluate(
+                model=model,
+                val_paths=val_paths,
+                seq_len=cfg.seq_len,
+                batch_size=cfg.batch_size,
+                stride=cfg.seq_len,
+                token_dtype=cfg.token_dtype,
+                device=device,
+                max_batches=(cfg.eval_max_batches if cfg.eval_max_batches > 0 else None),
+                log_every=0,
+            )
+            model.train()
+            if master:
+                print(f"[eval] step {step:6d} | val_loss {val_loss:.6f} | "
+                      f"batches {val_batches} | tokens {val_tokens:,}")
 
         if master and step % 10 == 0:
             elapsed_total = time.time() - train_start
