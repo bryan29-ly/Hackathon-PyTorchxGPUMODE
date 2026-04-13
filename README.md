@@ -1,3 +1,7 @@
+# **1st place at the PyTorch x GPU MODE Paris Hackathon 🏆**
+
+### The Challenge:
+
 # LLM Training Hackathon
 
 ## The Challenge
